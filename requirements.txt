@@ -2,3 +2,4 @@ numpy
 scipy
 networkx
 torch
+pytorch-ignite
