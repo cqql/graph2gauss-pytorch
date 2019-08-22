@@ -4,6 +4,9 @@ import random
 import networkx
 import numpy as np
 import scipy.sparse as sp
+import sklearn.linear_model as sklm
+import sklearn.metrics as skm
+import sklearn.model_selection as skms
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -262,7 +265,7 @@ def main():
     A, X, z = load_dataset(dataset_path)
 
     n = A.shape[0]
-    train_nodes, val_nodes = train_test_split(n)
+    train_nodes, val_nodes = train_test_split(n, train_ratio=0.5)
     A_train = A[train_nodes, :][:, train_nodes]
     X_train = X[train_nodes]
     z_train = z[train_nodes]
@@ -309,6 +312,23 @@ def main():
 
         loss = encoder.compute_loss(val_data, nsamples)
         print(f"Validation loss {loss:.3f}")
+
+    @trainer.on(Events.EPOCH_COMPLETED)
+    def node_classification(engine):
+        if engine.state.epoch % 5 != 1:
+            return
+
+        X = val_data.X
+        z = val_data.z
+        X_train, X_test, z_train, z_test = skms.train_test_split(
+            X, z, train_size=0.1, stratify=z
+        )
+
+        lr = sklm.LogisticRegressionCV(multi_class="auto", solver="lbfgs", cv=3)
+        lr.fit(X_train, z_train)
+
+        f1 = skm.SCORERS["f1_micro"]
+        print(f"LR F1 score {f1(lr, X_test, z_test)}")
 
     trainer.run([train_data], epochs)
 

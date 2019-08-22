@@ -3,3 +3,4 @@ scipy
 networkx
 torch
 pytorch-ignite
+sklearn
