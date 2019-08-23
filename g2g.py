@@ -164,45 +164,51 @@ class Encoder(nn.Module):
         """
 
         X = graph.X
-        weights = graph.loss_weights
 
         mu, sigma = self.forward(torch.tensor(X.toarray()))
-        loss = torch.tensor(0.0)
-        for i in graph.eligible_nodes():
-            mu_i, sigma_i = (
-                mu[i].expand((nsamples, -1)),
-                sigma[i].expand((nsamples, -1)),
-            )
 
-            # MC-estimate the loss function of this nodes' neighborhood graph
+        eligible_nodes = list(graph.eligible_nodes())
+        nrows = len(eligible_nodes) * nsamples
+        mu_i = torch.empty((nrows, mu.shape[-1]))
+        sigma_i = torch.empty((nrows, sigma.shape[-1]))
+        mu_j = torch.empty((nrows, mu.shape[-1]))
+        sigma_j = torch.empty((nrows, sigma.shape[-1]))
+        mu_k = torch.empty((nrows, mu.shape[-1]))
+        sigma_k = torch.empty((nrows, sigma.shape[-1]))
+
+        weights = torch.empty(nrows)
+
+        for index, i in enumerate(eligible_nodes):
+            start = index * nsamples
+            end = start + nsamples
+            mu_i[start:end], sigma_i[start:end] = mu[i], sigma[i]
+
             js, ks = graph.sample_two_neighbors(i, size=nsamples)
+            mu_j[start:end], sigma_j[start:end] = mu[js], sigma[js]
+            mu_k[start:end], sigma_k[start:end] = mu[ks], sigma[ks]
 
-            mu_j, sigma_j = mu[js], sigma[js]
-            mu_k, sigma_k = mu[ks], sigma[ks]
+            weights[start:end] = graph.loss_weights[i]
 
-            diff_ij = mu_i - mu_j
-            ratio_ji = sigma_j / sigma_i
-            closer = 0.5 * (
-                ratio_ji.sum(axis=-1)
-                + ((diff_ij / sigma_i) * diff_ij).sum(axis=-1)
-                - self.L
-                - torch.log(ratio_ji).sum(axis=-1)
-            )
+        diff_ij = mu_i - mu_j
+        ratio_ji = sigma_j / sigma_i
+        closer = 0.5 * (
+            ratio_ji.sum(axis=-1)
+            + ((diff_ij / sigma_i) * diff_ij).sum(axis=-1)
+            - self.L
+            - torch.log(ratio_ji).sum(axis=-1)
+        )
 
-            diff_ik = mu_i - mu_k
-            ratio_ki = sigma_k / sigma_i
-            apart = -0.5 * (
-                ratio_ki.sum(axis=-1)
-                + ((diff_ik / sigma_i) * diff_ik).sum(axis=-1)
-                - self.L
-            )
+        diff_ik = mu_i - mu_k
+        ratio_ki = sigma_k / sigma_i
+        apart = -0.5 * (
+            ratio_ki.sum(axis=-1)
+            + ((diff_ik / sigma_i) * diff_ik).sum(axis=-1)
+            - self.L
+        )
 
-            E = (
-                closer ** 2 + torch.exp(apart) * torch.sqrt(ratio_ki.prod(axis=-1))
-            ).sum() / nsamples
+        E = closer ** 2 + torch.exp(apart) * torch.sqrt(ratio_ki.prod(axis=-1))
 
-            # Accumulate the weighted sum of expectations
-            loss += weights[i] * E
+        loss = E.dot(weights) / nsamples
 
         return loss
 
