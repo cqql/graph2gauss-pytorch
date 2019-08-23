@@ -167,6 +167,7 @@ class Encoder(nn.Module):
         X = graph.X
         weights = graph.loss_weights
 
+        mu, sigma = self.forward(torch.tensor(X.toarray()))
         loss = torch.tensor(0.0)
         for i in graph.eligible_nodes():
             # MC-estimate the loss function of this nodes' neighborhood graph
@@ -175,28 +176,25 @@ class Encoder(nn.Module):
             for edge in edges:
                 j, k = edge[0], edge[1]
 
-                mu, sigma = self.forward(torch.tensor(X[[i, j, k]].toarray()))
-                mu_i, sigma_i = mu[0], sigma[0]
-                mu_j, sigma_j = mu[1], sigma[1]
-                mu_k, sigma_k = mu[2], sigma[2]
+                mu_i, sigma_i = mu[i], sigma[i]
+                mu_j, sigma_j = mu[j], sigma[j]
+                mu_k, sigma_k = mu[k], sigma[k]
 
                 diff_ij = mu_i - mu_j
+                ratio_ji = sigma_j / sigma_i
                 closer = 0.5 * (
-                    (sigma_j / sigma_i).sum()
+                    ratio_ji.sum()
                     + (diff_ij / sigma_i).dot(diff_ij)
                     - self.L
-                    - torch.log((sigma_j / sigma_i)).sum()
+                    - torch.log(ratio_ji).sum()
                 )
                 diff_ik = mu_i - mu_k
+                ratio_ki = sigma_k / sigma_i
                 apart = -0.5 * (
-                    (sigma_k / sigma_i).sum()
-                    + (diff_ik / sigma_i).dot(diff_ik)
-                    - self.L
+                    ratio_ki.sum() + (diff_ik / sigma_i).dot(diff_ik) - self.L
                 )
 
-                E += closer ** 2 + torch.exp(apart) * torch.sqrt(
-                    (sigma_k / sigma_i).prod()
-                )
+                E += closer ** 2 + torch.exp(apart) * torch.sqrt(ratio_ki.prod())
             E /= nsamples
 
             # Accumulate the weighted sum of expectations
