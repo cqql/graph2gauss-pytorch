@@ -181,21 +181,21 @@ class Encoder(nn.Module):
                 mu_k, sigma_k = mu[2], sigma[2]
 
                 diff_ij = mu_i - mu_j
-                closer = (
-                    0.5 * (sigma_j / sigma_i).sum()
+                closer = 0.5 * (
+                    (sigma_j / sigma_i).sum()
                     + (diff_ij / sigma_i).dot(diff_ij)
                     - self.L
                     - torch.log((sigma_j / sigma_i)).sum()
                 )
                 diff_ik = mu_i - mu_k
-                apart = (
-                    -0.5 * (sigma_k / sigma_i).sum()
+                apart = -0.5 * (
+                    (sigma_k / sigma_i).sum()
                     + (diff_ik / sigma_i).dot(diff_ik)
                     - self.L
                 )
 
-                E += closer ** 2 + torch.exp(apart) * (
-                    (sigma_k / sigma_i).prod() + np.exp(0.5)
+                E += closer ** 2 + torch.exp(apart) * torch.sqrt(
+                    (sigma_k / sigma_i).prod()
                 )
             E /= nsamples
 
@@ -245,6 +245,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--samples", type=int, default=3)
+    parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int)
     parser.add_argument("-c", "--checkpoint")
     parser.add_argument("--checkpoints")
@@ -253,14 +254,16 @@ def main():
 
     epochs = args.epochs
     nsamples = args.samples
+    learning_rate = args.lr
     seed = args.seed
     checkpoint_path = args.checkpoint
     checkpoints_path = args.checkpoints
     dataset_path = args.dataset
 
-    if seed:
-        torch.manual_seed(seed)
+    if seed is not None:
+        random.seed(seed)
         np.random.seed(seed)
+        torch.manual_seed(seed)
 
     A, X, z = load_dataset(dataset_path)
 
@@ -281,7 +284,7 @@ def main():
     if checkpoint_path:
         encoder.load_state_dict(torch.load(checkpoint_path))
 
-    optimizer = optim.Adam(encoder.parameters())
+    optimizer = optim.Adam(encoder.parameters(), lr=learning_rate)
 
     def step(engine, dataset):
         optimizer.zero_grad()
