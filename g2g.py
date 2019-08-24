@@ -86,6 +86,7 @@ class CompleteKPartiteGraph:
         Returns
         -------
         ([j], [k])
+        j will always be in a lower partition than k
         """
 
         # Sample the originating nodes for each edge
@@ -99,6 +100,13 @@ class CompleteKPartiteGraph:
         k = np.random.randint(self.out_degrees[j])
         filter = k >= self.start_i[j]
         k += filter.astype(np.int) * self.n_i[j]
+
+        # Swap nodes such that the partition index of j is less than that of k
+        # for each edge
+        wrong_order = k < j
+        tmp = k[wrong_order]
+        k[wrong_order] = j[wrong_order]
+        j[wrong_order] = tmp
 
         # Translate node indices back into user configured node IDs
         j = self.nodes[j]
