@@ -351,6 +351,10 @@ def main():
         )
         trainer.add_event_handler(Events.EPOCH_COMPLETED, handler, {"encoder": encoder})
 
+    @trainer.on(Events.EPOCH_STARTED)
+    def enable_train_mode(engine):
+        encoder.train()
+
     @trainer.on(Events.EPOCH_COMPLETED)
     def log_loss(engine):
         print(f"Epoch {engine.state.epoch:2d} - Loss {engine.state.output:.3f}")
@@ -360,6 +364,7 @@ def main():
         if engine.state.epoch % 10 != 1:
             return
 
+        encoder.eval()
         loss = encoder.compute_loss(val_data, nsamples)
         print(f"Validation loss {loss:.3f}")
 
@@ -372,15 +377,19 @@ def main():
         X = val_data.X
         z = val_data.z
 
+        encoder.eval()
+        mu, sigma = encoder(torch.tensor(X.toarray()))
+        X_learned = torch.cat([mu, sigma], axis=-1).detach().numpy()
+
         f1 = 0.0
-        n_rounds = 5
+        n_rounds = 1
         for i in range(n_rounds):
             X_train, X_test, z_train, z_test = skms.train_test_split(
-                X, z, train_size=0.1, stratify=z
+                X_learned, z, train_size=0.1, stratify=z
             )
 
             lr = sklm.LogisticRegressionCV(
-                multi_class="auto", solver="lbfgs", cv=3, max_iter=500
+                multi_class="auto", solver="lbfgs", cv=3, max_iter=1000
             )
             lr.fit(X_train, z_train)
 
