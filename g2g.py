@@ -366,7 +366,9 @@ def main():
             X, z, train_size=0.1, stratify=z
         )
 
-        lr = sklm.LogisticRegressionCV(multi_class="auto", solver="lbfgs", cv=3)
+        lr = sklm.LogisticRegressionCV(
+            multi_class="auto", solver="lbfgs", cv=3, max_iter=500
+        )
         lr.fit(X_train, z_train)
 
         f1 = skm.SCORERS["f1_micro"]
