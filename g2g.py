@@ -34,6 +34,79 @@ def load_dataset(filename):
         return A, X, z
 
 
+class CompleteKPartiteGraph:
+    """A complete k-partite graph
+    """
+
+    def __init__(self, partitions):
+        """
+        Parameters
+        ----------
+        partitions : [[int]]
+            List of node partitions where each partition is list of node IDs
+        """
+
+        self.partitions = partitions
+        self.counts = np.array([len(p) for p in partitions])
+        self.total = self.counts.sum()
+
+        assert len(self.partitions) >= 2
+        assert np.all(self.counts > 0)
+
+        # Enumerate all nodes so that we can easily look them up with an index
+        # from 1..total
+        self.nodes = np.array([node for partition in partitions for node in partition])
+
+        # Precompute the partition count of each node
+        self.n_i = np.array(
+            [n for partition, n in zip(self.partitions, self.counts) for _ in partition]
+        )
+
+        # Precompute the start of each node's partition in self.nodes
+        self.start_i = np.array(
+            [
+                end - n
+                for partition, n, end in zip(
+                    self.partitions, self.counts, self.counts.cumsum()
+                )
+                for node in partition
+            ]
+        )
+
+        # Each node has edges to every other node except the ones in its own
+        # level set
+        self.out_degrees = np.full(self.total, self.total) - self.n_i
+
+        # Sample the first nodes proportionally to their out-degree
+        self.p = self.out_degrees / self.out_degrees.sum()
+
+    def sample_edges(self, size=1):
+        """Sample edges (j, k) from this graph uniformly and independently
+
+        Returns
+        -------
+        ([j], [k])
+        """
+
+        # Sample the originating nodes for each edge
+        j = np.random.choice(self.total, size=size, p=self.p, replace=True)
+
+        # For each j sample one outgoing edge uniformly
+        #
+        # Se we want to sample from 1..n \ start[j]...(start[j] + count[j]). We
+        # do this by sampling from 1..#degrees[j] and if we hit a node
+
+        k = np.random.randint(self.out_degrees[j])
+        filter = k >= self.start_i[j]
+        k += filter.astype(np.int) * self.n_i[j]
+
+        # Translate node indices back into user configured node IDs
+        j = self.nodes[j]
+        k = self.nodes[k]
+
+        return j, k
+
+
 class AttributedGraph:
     def __init__(self, A, X, z):
         self.A = A
@@ -53,6 +126,13 @@ class AttributedGraph:
             [N[i][1:].sum() ** 2 - (N[i][1:] ** 2).sum() for i in self.nodes()]
         )
 
+        n = self.A.shape[0]
+        self.neighborhoods = [None] * n
+        for i in range(n):
+            ls = self.level_sets[i]
+            if len(ls) >= 3:
+                self.neighborhoods[i] = CompleteKPartiteGraph(ls[1:])
+
     def nodes(self):
         return range(self.A.shape[0])
 
@@ -64,62 +144,13 @@ class AttributedGraph:
         return [i for i in self.nodes() if len(N[i]) >= 3]
 
     def sample_two_neighbors(self, node, size=1):
+        """Sample to nodes from the neighborhood of different rank"""
+
         level_sets = self.level_sets[node]
-        if len(level_sets) < 2:
-            raise Exception("1-partite graphs contain no edges")
+        if len(level_sets) < 3:
+            raise Exception(f"Node {node} has only one layer of neighbors")
 
-        level_counts = self.level_counts[node]
-        n = level_counts.sum()
-
-        node_map = [node for level_set in level_sets for node in level_set]
-
-        # Store the cardinality of the level set of each node
-        n_i = np.array(
-            [
-                count
-                for level_set, count in zip(level_sets, level_counts)
-                for node in level_set
-            ]
-        )
-
-        # Precompute the start of each level set in the node index set 1..n
-        start_i = np.array(
-            [
-                end - count
-                for level_set, count, end in zip(
-                    level_sets, level_counts, level_counts.cumsum()
-                )
-                for node in level_set
-            ]
-        )
-
-        # Each node has edges to every other node except the ones in its own level
-        # set
-        out_degrees = np.full(n, n) - n_i
-
-        # Sample nodes proportionally to their out-degree
-        p = out_degrees / out_degrees.sum()
-        source = np.random.choice(n, size=size, p=p, replace=True)
-
-        # For every source node, select one outgoing edge uniformly at random
-        dest = np.empty_like(source)
-        for i in range(size):
-            s = source[i]
-
-            # Sample from 1..(start_i[s]..+n_i[s]-1)..n
-            d = np.random.randint(out_degrees[s])
-            if d >= start_i[s]:
-                d += n_i[s]
-
-            dest[i] = d
-
-        # Translate node indices back into entries from level_sets
-        for i in range(size):
-            source[i] = node_map[source[i]]
-            dest[i] = node_map[dest[i]]
-
-        return source, dest
-
+        return self.neighborhoods[node].sample_edges(size)
 
 
 class Encoder(nn.Module):
