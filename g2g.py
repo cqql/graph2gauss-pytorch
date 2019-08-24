@@ -357,7 +357,7 @@ def main():
 
     @trainer.on(Events.EPOCH_COMPLETED)
     def run_validation(engine):
-        if engine.state.epoch % 5 != 1:
+        if engine.state.epoch % 10 != 1:
             return
 
         loss = encoder.compute_loss(val_data, nsamples)
@@ -365,22 +365,29 @@ def main():
 
     @trainer.on(Events.EPOCH_COMPLETED)
     def node_classification(engine):
-        if engine.state.epoch % 5 != 1:
+        if engine.state.epoch % 10 != 1:
             return
 
+        f1_scorer = skm.SCORERS["f1_macro"]
         X = val_data.X
         z = val_data.z
-        X_train, X_test, z_train, z_test = skms.train_test_split(
-            X, z, train_size=0.1, stratify=z
-        )
 
-        lr = sklm.LogisticRegressionCV(
-            multi_class="auto", solver="lbfgs", cv=3, max_iter=500
-        )
-        lr.fit(X_train, z_train)
+        f1 = 0.0
+        n_rounds = 5
+        for i in range(n_rounds):
+            X_train, X_test, z_train, z_test = skms.train_test_split(
+                X, z, train_size=0.1, stratify=z
+            )
 
-        f1 = skm.SCORERS["f1_micro"]
-        print(f"LR F1 score {f1(lr, X_test, z_test)}")
+            lr = sklm.LogisticRegressionCV(
+                multi_class="auto", solver="lbfgs", cv=3, max_iter=500
+            )
+            lr.fit(X_train, z_train)
+
+            f1 += f1_scorer(lr, X_test, z_test)
+        f1 /= n_rounds
+
+        print(f"LR F1 score {f1}")
 
     trainer.run([train_data], epochs)
 
