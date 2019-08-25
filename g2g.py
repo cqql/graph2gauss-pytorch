@@ -13,7 +13,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from ignite.engine import Engine, Events
 from ignite.handlers import ModelCheckpoint
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
 CHECKPOINT_PREFIX = "g2g"
 
@@ -118,7 +118,7 @@ class CompleteKPartiteGraph:
 class AttributedGraph:
     def __init__(self, A, X, z):
         self.A = A
-        self.X = X
+        self.X = torch.tensor(X.toarray())
         self.z = z
         self.level_sets = level_sets(A)
 
@@ -159,6 +159,46 @@ class AttributedGraph:
             raise Exception(f"Node {node} has only one layer of neighbors")
 
         return self.neighborhoods[node].sample_edges(size)
+
+
+class GraphDataset(IterableDataset):
+    """A dataset that generates all necessary information for one training step
+
+    Sampling the edges is actually the most expensive part of the whole training
+    loop and by putting it in the dataset generator, we can parallelize it
+    independently from the training loop.
+    """
+
+    def __init__(self, graph, nsamples, iterations):
+        self.graph = graph
+        self.nsamples = nsamples
+        self.iterations = iterations
+
+    def __iter__(self):
+        graph = self.graph
+        nsamples = self.nsamples
+
+        eligible_nodes = list(graph.eligible_nodes())
+        nrows = len(eligible_nodes) * nsamples
+
+        weights = torch.empty(nrows)
+
+        for _ in range(self.iterations):
+            i_indices = torch.empty(nrows, dtype=torch.long)
+            j_indices = torch.empty(nrows, dtype=torch.long)
+            k_indices = torch.empty(nrows, dtype=torch.long)
+            for index, i in enumerate(eligible_nodes):
+                start = index * nsamples
+                end = start + nsamples
+                i_indices[start:end] = i
+
+                js, ks = graph.sample_two_neighbors(i, size=nsamples)
+                j_indices[start:end] = torch.tensor(js)
+                k_indices[start:end] = torch.tensor(ks)
+
+                weights[start:end] = graph.loss_weights[i]
+
+            yield graph.X, i_indices, j_indices, k_indices, weights, nsamples
 
 
 def gather_rows(input, index):
@@ -206,39 +246,18 @@ class Encoder(nn.Module):
 
         return mu, sigma
 
-    def compute_loss(self, graph, nsamples):
+    def compute_loss(self, X, i, j, k, w, nsamples):
         """Compute the energy-based loss from the paper
         """
 
-        X = graph.X
+        mu, sigma = self.forward(X)
 
-        mu, sigma = self.forward(torch.tensor(X.toarray()))
-
-        eligible_nodes = list(graph.eligible_nodes())
-        nrows = len(eligible_nodes) * nsamples
-
-        weights = torch.empty(nrows)
-
-        i_indices = torch.empty(nrows, dtype=torch.long)
-        j_indices = torch.empty(nrows, dtype=torch.long)
-        k_indices = torch.empty(nrows, dtype=torch.long)
-        for index, i in enumerate(eligible_nodes):
-            start = index * nsamples
-            end = start + nsamples
-            i_indices[start:end] = i
-
-            js, ks = graph.sample_two_neighbors(i, size=nsamples)
-            j_indices[start:end] = torch.tensor(js)
-            k_indices[start:end] = torch.tensor(ks)
-
-            weights[start:end] = graph.loss_weights[i]
-
-        mu_i = gather_rows(mu, i_indices)
-        sigma_i = gather_rows(sigma, i_indices)
-        mu_j = gather_rows(mu, j_indices)
-        sigma_j = gather_rows(sigma, j_indices)
-        mu_k = gather_rows(mu, k_indices)
-        sigma_k = gather_rows(sigma, k_indices)
+        mu_i = gather_rows(mu, i)
+        sigma_i = gather_rows(sigma, i)
+        mu_j = gather_rows(mu, j)
+        sigma_j = gather_rows(sigma, j)
+        mu_k = gather_rows(mu, k)
+        sigma_k = gather_rows(sigma, k)
 
         diff_ij = mu_i - mu_j
         ratio_ji = sigma_j / sigma_i
@@ -257,7 +276,7 @@ class Encoder(nn.Module):
 
         E = closer ** 2 + torch.exp(apart) * torch.sqrt(ratio_ki.prod(axis=-1))
 
-        loss = E.dot(weights) / nsamples
+        loss = E.dot(w) / nsamples
 
         return loss
 
@@ -316,12 +335,22 @@ def train_test_split(n, train_ratio=0.5):
     return nodes[:split_index], nodes[split_index:]
 
 
+def reset_seeds(seed=None):
+    if seed is None:
+        seed = get_worker_info().seed
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--samples", type=int, default=3)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("-c", "--checkpoint")
     parser.add_argument("--checkpoints")
     parser.add_argument("dataset")
@@ -331,14 +360,13 @@ def main():
     nsamples = args.samples
     learning_rate = args.lr
     seed = args.seed
+    n_workers = args.workers
     checkpoint_path = args.checkpoint
     checkpoints_path = args.checkpoints
     dataset_path = args.dataset
 
     if seed is not None:
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
+        reset_seeds(seed)
 
     A, X, z = load_dataset(dataset_path)
 
@@ -361,10 +389,10 @@ def main():
 
     optimizer = optim.Adam(encoder.parameters(), lr=learning_rate)
 
-    def step(engine, dataset):
+    def step(engine, args):
         optimizer.zero_grad()
 
-        loss = encoder.compute_loss(dataset, nsamples)
+        loss = encoder.compute_loss(*args[0])
         loss.backward()
 
         optimizer.step()
@@ -375,21 +403,23 @@ def main():
 
     if checkpoints_path:
         handler = ModelCheckpoint(
-            checkpoints_path, CHECKPOINT_PREFIX, n_saved=3, save_interval=1
+            checkpoints_path, CHECKPOINT_PREFIX, n_saved=3, save_interval=50
         )
-        trainer.add_event_handler(Events.EPOCH_COMPLETED, handler, {"encoder": encoder})
+        trainer.add_event_handler(
+            Events.ITERATION_COMPLETED, handler, {"encoder": encoder}
+        )
 
-    @trainer.on(Events.EPOCH_STARTED)
+    @trainer.on(Events.ITERATION_STARTED)
     def enable_train_mode(engine):
         encoder.train()
 
-    @trainer.on(Events.EPOCH_COMPLETED)
+    @trainer.on(Events.ITERATION_COMPLETED)
     def log_loss(engine):
-        print(f"Epoch {engine.state.epoch:2d} - Loss {engine.state.output:.3f}")
+        print(f"Epoch {engine.state.iteration:2d} - Loss {engine.state.output:.3f}")
 
-    @trainer.on(Events.EPOCH_COMPLETED)
+    @trainer.on(Events.ITERATION_COMPLETED)
     def run_validation(engine):
-        if engine.state.epoch % 10 != 1:
+        if engine.state.iteration % 50 != 1:
             return
 
         # Skip if there is no validation set
@@ -400,9 +430,9 @@ def main():
         loss = encoder.compute_loss(val_data, nsamples)
         print(f"Validation loss {loss:.3f}")
 
-    @trainer.on(Events.EPOCH_COMPLETED)
+    @trainer.on(Events.ITERATION_COMPLETED)
     def node_classification(engine):
-        if engine.state.epoch % 10 != 1:
+        if engine.state.iteration % 50 != 1:
             return
 
         f1_scorer = skm.SCORERS["f1_macro"]
@@ -413,7 +443,7 @@ def main():
         z = train_data.z
 
         encoder.eval()
-        mu, sigma = encoder(torch.tensor(X.toarray()))
+        mu, sigma = encoder(X)
         X_learned = mu.detach().numpy()
 
         f1 = 0.0
@@ -433,7 +463,17 @@ def main():
 
         print(f"LR F1 score {f1}")
 
-    trainer.run([train_data], epochs)
+    iterations = epochs // n_workers
+    dataset = GraphDataset(train_data, nsamples, iterations)
+    loader = DataLoader(
+        dataset,
+        batch_size=1,
+        num_workers=n_workers,
+        worker_init_fn=reset_seeds,
+        collate_fn=lambda args: args,
+    )
+    epochs = 1
+    trainer.run(loader, epochs)
 
 
 if __name__ == "__main__":
