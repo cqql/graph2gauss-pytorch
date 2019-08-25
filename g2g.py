@@ -371,7 +371,7 @@ def main():
     A, X, z = load_dataset(dataset_path)
 
     n = A.shape[0]
-    train_nodes, val_nodes = train_test_split(n, train_ratio=0.5)
+    train_nodes, val_nodes = train_test_split(n, train_ratio=1.0)
     A_train = A[train_nodes, :][:, train_nodes]
     X_train = X[train_nodes]
     z_train = z[train_nodes]
@@ -382,7 +382,7 @@ def main():
     train_data = AttributedGraph(A_train, X_train, z_train)
     val_data = AttributedGraph(A_val, X_val, z_val)
 
-    L = 10
+    L = 64
     encoder = Encoder(X.shape[1], L)
     if checkpoint_path:
         encoder.load_state_dict(torch.load(checkpoint_path))
