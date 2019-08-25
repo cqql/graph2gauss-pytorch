@@ -183,16 +183,19 @@ class Encoder(nn.Module):
             # TODO: Initialize bias with xavier but pytorch cannot compute the
             # necessary fan-in for 1-dimensional parameters
 
-        self.linear1 = nn.Linear(D, 512)
-        self.linear_mu = nn.Linear(512, L)
-        self.linear_sigma = nn.Linear(512, L)
+        self.linear1 = nn.Linear(D, 256)
+        self.linear2 = nn.Linear(256, 128)
+        self.linear_mu = nn.Linear(128, L)
+        self.linear_sigma = nn.Linear(128, L)
 
         xavier_init(self.linear1)
+        xavier_init(self.linear2)
         xavier_init(self.linear_mu)
         xavier_init(self.linear_sigma)
 
     def forward(self, node):
         h = F.relu(self.linear1(node))
+        h = F.relu(self.linear2(h))
         mu = self.linear_mu(h)
         sigma = F.elu(self.linear_sigma(h)) + 1
 
