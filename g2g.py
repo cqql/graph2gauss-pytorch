@@ -1,9 +1,9 @@
 import argparse
 import random
 
-import networkx
 import numpy as np
 import scipy.sparse as sp
+import scipy.sparse.csgraph
 import sklearn.linear_model as sklm
 import sklearn.metrics as skm
 import sklearn.model_selection as skms
@@ -275,19 +275,37 @@ def level_sets(A):
     { node: [i -> i-hop neighborhood] }
     """
 
-    G = networkx.from_scipy_sparse_matrix(A)
-    paths = networkx.all_pairs_shortest_path(G)
+    if A.shape[0] == 0 or A.shape[1] == 0:
+        return {}
 
-    def reduce_paths(paths):
-        max_depth = max(len(path) for path in paths.values())
-        levels = [[] for _ in range(max_depth)]
+    # Compute the shortest path length between any two nodes
+    D = scipy.sparse.csgraph.shortest_path(
+        A, method="D", unweighted=True, directed=False
+    )
 
-        for node, path in paths.items():
-            levels[len(path) - 1].append(node)
+    # Cast to int so that the distances can be used as indices
+    #
+    # D has inf for any pair of nodes from different cmponents and np.isfinite
+    # is really slow on individual numbers so we call it only once here
+    D[np.logical_not(np.isfinite(D))] = -1.0
+    D = D.astype(np.int)
 
-        return levels
+    # Read the level sets off the distance matrix
+    set_counts = D.max(axis=1)
+    sets = {i: [[] for _ in range(1 + set_counts[i])] for i in range(D.shape[0])}
+    for i in range(D.shape[0]):
+        sets[i][0].append(i)
 
-    return {root: reduce_paths(paths) for root, paths in paths}
+        for j in range(i):
+            d = D[i, j]
+
+            if d < 0:
+                continue
+
+            sets[i][d].append(j)
+            sets[j][d].append(i)
+
+    return sets
 
 
 def train_test_split(n, train_ratio=0.5):
