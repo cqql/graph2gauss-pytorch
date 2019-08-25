@@ -161,6 +161,11 @@ class AttributedGraph:
         return self.neighborhoods[node].sample_edges(size)
 
 
+def gather_rows(input, index):
+    """Gather the rows specificed by index from the input tensor"""
+    return torch.gather(input, 0, index.unsqueeze(-1).expand((-1, input.shape[1])))
+
+
 class Encoder(nn.Module):
     def __init__(self, D, L):
         """Construct the encoder
@@ -211,25 +216,29 @@ class Encoder(nn.Module):
 
         eligible_nodes = list(graph.eligible_nodes())
         nrows = len(eligible_nodes) * nsamples
-        mu_i = torch.empty((nrows, mu.shape[-1]))
-        sigma_i = torch.empty((nrows, sigma.shape[-1]))
-        mu_j = torch.empty((nrows, mu.shape[-1]))
-        sigma_j = torch.empty((nrows, sigma.shape[-1]))
-        mu_k = torch.empty((nrows, mu.shape[-1]))
-        sigma_k = torch.empty((nrows, sigma.shape[-1]))
 
         weights = torch.empty(nrows)
 
+        i_indices = torch.empty(nrows, dtype=torch.long)
+        j_indices = torch.empty(nrows, dtype=torch.long)
+        k_indices = torch.empty(nrows, dtype=torch.long)
         for index, i in enumerate(eligible_nodes):
             start = index * nsamples
             end = start + nsamples
-            mu_i[start:end], sigma_i[start:end] = mu[i], sigma[i]
+            i_indices[start:end] = i
 
             js, ks = graph.sample_two_neighbors(i, size=nsamples)
-            mu_j[start:end], sigma_j[start:end] = mu[js], sigma[js]
-            mu_k[start:end], sigma_k[start:end] = mu[ks], sigma[ks]
+            j_indices[start:end] = torch.tensor(js)
+            k_indices[start:end] = torch.tensor(ks)
 
             weights[start:end] = graph.loss_weights[i]
+
+        mu_i = gather_rows(mu, i_indices)
+        sigma_i = gather_rows(sigma, i_indices)
+        mu_j = gather_rows(mu, j_indices)
+        sigma_j = gather_rows(sigma, j_indices)
+        mu_k = gather_rows(mu, k_indices)
+        sigma_k = gather_rows(sigma, k_indices)
 
         diff_ij = mu_i - mu_j
         ratio_ji = sigma_j / sigma_i
