@@ -232,7 +232,7 @@ class Encoder(nn.Module):
         ratio_ji = sigma_j / sigma_i
         closer = 0.5 * (
             ratio_ji.sum(axis=-1)
-            + ((diff_ij / sigma_i) * diff_ij).sum(axis=-1)
+            + (diff_ij ** 2 / sigma_i).sum(axis=-1)
             - self.L
             - torch.log(ratio_ji).sum(axis=-1)
         )
@@ -240,9 +240,7 @@ class Encoder(nn.Module):
         diff_ik = mu_i - mu_k
         ratio_ki = sigma_k / sigma_i
         apart = -0.5 * (
-            ratio_ki.sum(axis=-1)
-            + ((diff_ik / sigma_i) * diff_ik).sum(axis=-1)
-            - self.L
+            ratio_ki.sum(axis=-1) + (diff_ik ** 2 / sigma_i).sum(axis=-1) - self.L
         )
 
         E = closer ** 2 + torch.exp(apart) * torch.sqrt(ratio_ki.prod(axis=-1))
