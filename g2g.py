@@ -364,6 +364,10 @@ def main():
         if engine.state.epoch % 10 != 1:
             return
 
+        # Skip if there is no validation set
+        if val_data.A.shape[0] == 0:
+            return
+
         encoder.eval()
         loss = encoder.compute_loss(val_data, nsamples)
         print(f"Validation loss {loss:.3f}")
@@ -374,12 +378,15 @@ def main():
             return
 
         f1_scorer = skm.SCORERS["f1_macro"]
-        X = val_data.X
-        z = val_data.z
+
+        # Apparently evaluating on the training data is normal for graph
+        # learning?
+        X = train_data.X
+        z = train_data.z
 
         encoder.eval()
         mu, sigma = encoder(torch.tensor(X.toarray()))
-        X_learned = torch.cat([mu, sigma], axis=-1).detach().numpy()
+        X_learned = mu.detach().numpy()
 
         f1 = 0.0
         n_rounds = 1
