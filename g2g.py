@@ -116,11 +116,11 @@ class CompleteKPartiteGraph:
 
 
 class AttributedGraph:
-    def __init__(self, A, X, z):
+    def __init__(self, A, X, z, K):
         self.A = A
         self.X = torch.tensor(X.toarray())
         self.z = z
-        self.level_sets = level_sets(A)
+        self.level_sets = level_sets(A, K)
 
         # Precompute the cardinality of each level set for every node
         self.level_counts = {
@@ -281,13 +281,17 @@ class Encoder(nn.Module):
         return loss
 
 
-def level_sets(A):
+def level_sets(A, K):
     """Enumerate the level sets for each node's neighborhood
 
     Parameters
     ----------
     A : np.array
         Adjacency matrix
+    K : int?
+        Maximum path length to consider
+
+        All nodes that are further apart go into the last level set.
 
     Returns
     -------
@@ -309,20 +313,28 @@ def level_sets(A):
     D[np.logical_not(np.isfinite(D))] = -1.0
     D = D.astype(np.int)
 
+    # Handle nodes farther than K as if they were unreachable
+    if K is not None:
+        D[D > K] = -1
+
     # Read the level sets off the distance matrix
     set_counts = D.max(axis=1)
-    sets = {i: [[] for _ in range(1 + set_counts[i])] for i in range(D.shape[0])}
+    sets = {i: [[] for _ in range(1 + set_counts[i] + 1)] for i in range(D.shape[0])}
     for i in range(D.shape[0]):
         sets[i][0].append(i)
 
         for j in range(i):
             d = D[i, j]
 
+            # If a node is unreachable, add it to the outermost level set. This
+            # trick ensures that nodes from different connected components get
+            # pushed apart and is essential to get good performance.
             if d < 0:
-                continue
-
-            sets[i][d].append(j)
-            sets[j][d].append(i)
+                sets[i][-1].append(j)
+                sets[j][-1].append(i)
+            else:
+                sets[i][d].append(j)
+                sets[j][d].append(i)
 
     return sets
 
@@ -351,6 +363,9 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument(
+        "-k", type=int, default=1, help="Maximum depth to consider in level sets"
+    )
     parser.add_argument("-c", "--checkpoint")
     parser.add_argument("--checkpoints")
     parser.add_argument("dataset")
@@ -361,6 +376,7 @@ def main():
     learning_rate = args.lr
     seed = args.seed
     n_workers = args.workers
+    K = args.k
     checkpoint_path = args.checkpoint
     checkpoints_path = args.checkpoints
     dataset_path = args.dataset
@@ -379,8 +395,8 @@ def main():
     X_val = X[val_nodes]
     z_val = z[val_nodes]
 
-    train_data = AttributedGraph(A_train, X_train, z_train)
-    val_data = AttributedGraph(A_val, X_val, z_val)
+    train_data = AttributedGraph(A_train, X_train, z_train, K)
+    val_data = AttributedGraph(A_val, X_val, z_val, K)
 
     L = 64
     encoder = Encoder(X.shape[1], L)
