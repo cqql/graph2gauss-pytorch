@@ -431,7 +431,8 @@ def main():
 
     @trainer.on(Events.ITERATION_COMPLETED)
     def log_loss(engine):
-        print(f"Epoch {engine.state.iteration:2d} - Loss {engine.state.output:.3f}")
+        if engine.state.iteration % 10 == 0:
+            print(f"Epoch {engine.state.iteration:2d} - Loss {engine.state.output:.3f}")
 
     @trainer.on(Events.ITERATION_COMPLETED)
     def run_validation(engine):
