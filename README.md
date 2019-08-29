@@ -23,3 +23,8 @@ Epoch 90 - Loss 8618428.000
 Epoch 100 - Loss 7848496.500
 LR F1 score 0.8252173651998809
 ```
+
+A significant difference between this and the reference implementation is the
+Monte-Carlo approximation to the loss function. The authors used node-based
+sampling whereas I used edge sampling as described [on my
+website](https://martenlienen.com/sampling-k-partite-graph-edges/).
